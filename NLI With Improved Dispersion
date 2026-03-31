@@ -1,0 +1,634 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy as sp 
+plt.rcParams['text.usetex'] = True
+plt.rcParams['figure.dpi'] = 400 
+savefigures = 'true' 
+dispersion = 'true'
+
+#This is the code for generating the simulations presented in the
+#manuscript "State Engineering via Nonlinear Interferometer with Linear Spectral Phases"
+#by the authors Cody Charles Payne, Elaganuru Bashaiah, and Markus Allgaier.
+#The code simulates the operation of a four-stage nonlinear interferometer (NLI)
+#with linear spectral phases (time delays). The code can generate simulations 
+#of either a grid or high-dimensional entangled (HDE) state depending on the choice of the variable titled grid_or_HDE.
+#The difference between these cases is only the sequence of time delays.
+#Time delays are chosen for pump, signal, and idler photons individually and
+#then summed in such a way that for a given crystal (indexed 'j') 
+#the total spectral phase for the amplitude corresponding to pair production in crystal j is (omega_s + omega_i) * (sum of time delays applied to pump prior to crystal j)
+#+omega_s * (sum of time delays applied to signal photon following crystal j)
+#+omega_i * (sum of time delays applied to idler photon following crystal j).
+#The modulation which the joint spectrum receives is then sum_j (exp(i * total spectral phase for crystal j)).
+#We generate the joint spectral amplitude in the absence of the modulation term by assuming a gaussian pump profile and a sinc phase matching function.
+#We then simulate the effect of loss by assuming that for every crystal with the exception of the first
+#there are two interfaces between free-space and fiber at which loss compounds. 
+#In the case of the grid state we show the first two signal and idler spectral modes
+#calculated via singular value decomposition as well as the spectral state of the idler photon which results from 
+#wavelength-resolving projective measurement on the signal photon.
+#We show how the modes and this projected state vary with different amounts of loss.
+#We also show for both states how the Schmidt number, overlap between the lossy modulated state with the lossless modulated state, and overlap of the lossy modulated state with the unmodulated state
+#vary with loss. 
+
+#Define useful conversion factors (code needs to receive variables in micrometers) 
+#these allow us to use a number in more familiar units (for instance c = 3e8, crystal lengths in millimeters, etc) and automatically convert to micrometers 
+millimeters = 1e3 #micrometers
+nanometers = 1e-3 #micrometers
+meters_per_second = 1e6 #micrometers per second
+degrees = np.pi / 180 #radians
+scale_factor = 4 #scale_factor was used to tune the range and resolution of graphs
+#and the time delays and pump bandwidths in such a way as to show that over
+#sufficiently narrow wavelength ranges with sufficiently short crystal, dispersion can be neglected
+
+#Define down-conversion parameters 
+grid_or_HDE = 'grid' #choose 'grid' or 'HDE' (HDE stands for "high-dimensional entangled") 
+#this determines whether the code simulates a grid state or an HDE state
+
+#define pump, signal, and idler polarization ('o' = 'ordinary' polarization, 'e' = 'extraordinary' polarization) 
+pump_polarization_HDE = 'e'
+signal_polarization_HDE = 'o'
+idler_polarization_HDE = 'e'
+
+pump_polarization_grid = 'e'
+signal_polarization_grid = 'o'
+idler_polarization_grid = 'e'
+
+#simplify variable names based on the choice of grid or HDE
+if grid_or_HDE == 'grid':
+    pump_polarization = pump_polarization_grid
+    signal_polarization = signal_polarization_grid
+    idler_polarization = idler_polarization_grid
+elif grid_or_HDE == 'HDE':
+    pump_polarization = pump_polarization_HDE 
+    signal_polarization = signal_polarization_HDE 
+    idler_polarization = idler_polarization_HDE
+
+#this line just creates a string like 'oeo' labeled "phasematching_type" for use in labeling figures
+phasematching_type = pump_polarization+signal_polarization+idler_polarization 
+
+if grid_or_HDE == 'grid':
+    crystal = 'LNO3' #choose 'KTP', 'BBO', 'AgGaS2', or 'LNO3'
+    #'KTP_ordinary_axis' exists because KTP actually has three axes (x, y, z) which each have different refractive indices
+    #the extraordinary axis corresponds to 'z' always
+    #'KTP_ordinary_axis' sets whether the ordinary axis refers to x or y 
+    KTP_ordinary_axis = 'x'   
+elif grid_or_HDE == 'HDE':
+    crystal = 'LNO3' 
+    KTP_ordinary_axis = 'y'
+ 
+#theta_pm refers to the phasematching angle
+#we can choose to do SPDC with "critical phasematching"
+#under critical phasematching we choose the angle theta
+#then the extraordinary refractive index is given by a particular function 
+#of ordinary and extraordinary refractive indices and the phasematching angle
+if grid_or_HDE == 'grid':
+    theta_pm = 30 * degrees
+elif grid_or_HDE == 'HDE':
+    if crystal == 'BBO' or crystal == 'AgGaS2' or crystal == 'LNO3':
+        theta_pm =  30 * degrees
+    else:
+        theta_pm = 90 * degrees 
+        #critical phasematching involves a more complicated formula for biaxial crystals (i.e. KTP)
+        #so this line just ensures that there is no critical phasematching if the crystal is KTP
+    
+#choose resolution and extent of wavelength arrays for grid and HDE simulations
+grid_state_resolution = 0.02 * nanometers / scale_factor
+grid_state_span = 35  *nanometers /scale_factor
+HDE_state_resolution = 0.4  *nanometers /scale_factor
+HDE_state_span = 79.2 *nanometers /scale_factor
+
+#Define useful constants
+two_pi = 2 * np.pi 
+c = 2.99792458e8 * meters_per_second #speed of light in microns/second
+
+#pump bandwidths in the HDE and grid cases
+if grid_or_HDE == 'HDE':
+    pump_bandwidth = 1 * nanometers / scale_factor
+elif grid_or_HDE == 'grid':
+    pump_bandwidth = 1 * nanometers / scale_factor
+    
+#we may conceivably want to have a different crystal length depending on whether we want to generate HDE or grid modulation
+crystal_length_for_grid_state = .5 * millimeters 
+crystal_length_for_HDE_state =  .5 * millimeters 
+
+#Define useful functions for converting between wavelength and angular frequency
+
+#this function takes angular frequency (value) in rad/sec and returns a new value of the corresponding wavelength in micrometers
+def wavelength(angular_frequency, speed_of_light = c, two_pi = two_pi):
+    return two_pi * speed_of_light / angular_frequency 
+
+#this function takes wavelength in micrometers and converts it to the corresponding angular frequency value in rad/sec
+def angular_frequency(wavelength, speed_of_light = c, two_pi = two_pi):
+    return two_pi * speed_of_light / wavelength 
+
+#define a function that normalizes a function f(x) such that the definite integral 
+#over its domain is 1 
+#accepts x (1D array-like) and f_of_x (1D array-like)
+#and returns f_of_x multiplied by a normalization factor
+def normalize(x, f_of_x):
+    a = x[0] 
+    b = x[-1] 
+    n = len(x)
+    dx = (b - a) / n
+    integral = 0
+    for j in range(1, n):
+        f_of_x_j = f_of_x[j] 
+        integral += abs(f_of_x_j) * dx 
+    normalization_factor = integral ** (-1) 
+    return f_of_x * normalization_factor 
+
+#define a function that normalizes |f(x)|^2 
+#accepts x (1D array-like) and f_of_x (1D array-like)
+#and returns f_of_x multiplied by normalization factor
+def normalize_square(x, f_of_x):
+    a = x[0] 
+    b = x[-1]
+    n = len(x)
+    dx = (b - a) / n
+    integral = 0
+    for j in range(1, n):
+        f_of_x_j = f_of_x[j] 
+        integral += abs(f_of_x_j)**2 * dx 
+    normalization_factor = integral ** (-1/2) 
+    return f_of_x * normalization_factor 
+
+#define a function that normalizes |f(x,y)|^2 
+#this function takes the inputs {x,y} (1D array-like)
+#and a f_of_x_y (2D array-like) which is assumed to be generated from some function f(x,y)
+#and returns f_of_x_y multiplied by a normalization factor
+def normalize_2D(x, y, f_of_x_y):
+    a = x[0] 
+    b = x[-1]
+    d = y[0] 
+    e = y[-1]
+    n = len(x)
+    m = len(y) 
+    dx = (b - a) / n
+    dy = (e - d) / m
+    integral = 0
+    for j in range(0, n):
+        for k in range(0, m):
+            f_of_x_y_j_k = f_of_x_y[j,k]
+            integral += abs(f_of_x_y_j_k)**2 * dx * dy
+    normalization_factor = integral ** (-1/2) 
+    return f_of_x_y * normalization_factor
+
+#define the time delays for grid and HDE modulation
+L_0 = 1 * millimeters   
+tau_0 = L_0 / c 
+tau_grid = 2.5 * tau_0 * scale_factor * 1.198 #ended up with some arbitrary-looking scaling factors when fine-tuning the code for best results
+tau_HDE = 0.2 * tau_0 * scale_factor * 1.1
+
+#set the sequence of time delays for the grid and HDE modulation 
+#these correspond to equations (17) and (22) in the manuscript
+tau_p_grid = [0, tau_grid, 0, tau_grid]
+tau_s_grid = [tau_grid, tau_grid/2, 0, 0]
+tau_i_grid = [0, tau_grid/2, tau_grid, 0] 
+
+tau_p_HDE = [0, tau_HDE, tau_HDE/2, 0]
+tau_s_HDE = [0, tau_HDE, 0, 0]
+tau_i_HDE = [2*tau_HDE, 0, 0, 0] 
+
+#simplify variable names from here on out based on choice of grid or HDE
+if grid_or_HDE == 'grid':
+    L = crystal_length_for_grid_state 
+    tau = tau_grid 
+    tau_p = tau_p_grid
+    tau_s = tau_s_grid 
+    tau_i = tau_i_grid 
+    
+elif grid_or_HDE == 'HDE':
+    L = crystal_length_for_HDE_state 
+    tau = tau_HDE 
+    tau_p = tau_p_HDE 
+    tau_s = tau_s_HDE 
+    tau_i = tau_i_HDE 
+
+#total time delay associated with pair production in j^th crystal
+#this corresponds to the phase accumulation rule of equation (12) in the manuscript
+tau_p_j = lambda j: sum(tau_p[0:j+1])
+tau_s_j = lambda j: sum(tau_s[j:4]) 
+tau_i_j = lambda j: sum(tau_i[j:4]) 
+
+#define some useful plotting parameters 
+#params_1D and params_2D are simply arrays of useful variables to generalize plotting
+params_1D = np.zeros(4, dtype = object)
+params_2D = np.zeros(4, dtype = object) 
+#params_1D[0] and params_2D[0] are the x-axis labels
+#params_1D[1] and params_2D[1] are the y-axis labels
+params_1D[0] = r'$\lambda~\mathrm{(nm)}$'
+params_1D[1] = r'$\mathrm{Intensity}~\mathrm{(a.u.)}$'
+params_2D[0] = r'$\lambda_s~\mathrm{(nm)}$'
+params_2D[1] = r'$\lambda_i~\mathrm{(nm)}$'
+#params_1D[2] and params_2D[2] are the axis label fontsizes
+#params_1D[3] and params_2D[3] are the axis tick fontsizes 
+params_1D[2] = 24
+params_1D[3] = 20
+params_2D[2] = 24 
+params_2D[3] = 20
+
+#this function takes x (1D array-like)
+#f (1D array-like)
+#and plots |f|/max(|f|) vs. x*1000 (corresponding to conversion of x from micrometers to nanometers)
+#title is a string which sets the figure title and how it is saved
+def plot_1D(x,f,title,params=params_1D):
+    fig,ax = plt.subplots() 
+    ax.plot(x*1000, f/np.max(abs(f)), rasterized = True) 
+    ax.set_xlabel(params[0], fontsize = params[2]) 
+    ax.set_ylabel(params[1], fontsize = params[2]) 
+    ax.tick_params(axis = 'x', labelsize = params[3])
+    ax.tick_params(axis = 'y', labelsize = params[3])
+    ax.legend()
+    ax.grid() 
+    if savefigures == 'true':
+        plt.savefig(title+'.svg')
+    plt.title(title)
+    plt.legend() 
+    plt.show() 
+    return ax  
+
+#this function takes x,y (1D array-like) 
+#and f (2D array-like)
+#and plots a colormesh (density plot) of |f|^2 / max(|f|^2) -- in other words it accepts an f in amplitude 
+#and automatically plots the corresponding |f|^2 in intensity with pseudo-normalization
+#vs. x*1000 and y*1000 (corresponding to conversion of x and y from micrometers to nanometers).
+def plot_2D(x,y,f,title,params=params_2D, savefigures = savefigures, filetype = '.svg'):
+    fig,ax = plt.subplots() 
+    f /= np.max(abs(f)) 
+    ax.pcolormesh(x*1000, y*1000, abs(f)**2, rasterized = True)
+    pcm = ax.get_children()[0] 
+    cbar = plt.colorbar(pcm, ax = ax) 
+    cbar.set_label(r'$\mathrm{Intensity}~\mathrm{(a.u.)}$', size = 20) 
+    cbar.ax.tick_params(labelsize = 20) 
+    ax.set_xlabel(params[0], fontsize = params[2]) 
+    ax.set_ylabel(params[1], fontsize = params[2]) 
+    ax.tick_params(axis = 'x', labelsize = params[3])
+    ax.tick_params(axis = 'y', labelsize = params[3]) 
+    ax.grid() 
+    if savefigures == 'true':
+        plt.savefig(title+filetype)
+    plt.title(title)
+    plt.show() 
+    return ax 
+
+#a function that calculates the singular value decomposition of a joint spectral ampltude
+#it takes l_1 and l_2 (1D array-like) and JSA (2D array-like) 
+#as well as plotting which is a string that is either 'true' or 'false'
+#and loss_in_dB corresponding to the possibility of loss which will be calculated later
+def get_modes(l_1, l_2, JSA, plotting, loss_in_dB):
+    U,s,V = np.linalg.svd(JSA) 
+    #U = matrix whose columns are the signal mode arrays
+    #s = matrix whose diagonal elements are the amplitudes for the modes
+    #V = matrix whose rows are the idler mode arrays 
+    #s_norm = normalized amplitudes
+    #K = Schmidt number 
+    s_norm = s / np.sqrt(sum(s**2)) 
+    K = 1 / sum(abs(s_norm)**4) 
+    #the jth signal mode is the jth column of U, i.e. U[:,j]
+    #the jth idler mode is the jth row of V, i.e. V[j,:] 
+    signal_modes = lambda j: U[:,j] 
+    idler_modes = lambda j: V[j,:]  
+    if plotting == 'true' and loss_in_dB in [0,1,3]:
+        for j in range(0,2):
+            fig, ax = plt.subplots()
+            ax.plot(l_1*1000, abs(signal_modes(j))**2 / np.max(abs(signal_modes(j))**2), label = rf'$|\psi^{{(s)}}_{j}|^2\,$'+ rf'$({np.round(loss_in_dB,2)}\;\mathrm{{dB}})$', linewidth = 2) 
+            ax.plot(l_2*1000, abs(idler_modes(j))**2 / np.max(abs(idler_modes(j))**2), label = rf'$|\phi^{{(i)}}_{j}|^2\,$'+ rf'$({np.round(loss_in_dB,2)}\;\mathrm{{dB}})$', linewidth = 2) 
+            ax.set_xlabel(r'$\lambda~\mathrm{(nm)}$', fontsize = 24)
+            ax.set_ylabel(r'$\mathrm{Intensity}~\mathrm{(a.u.)}$', fontsize = 24) 
+            ax.tick_params(axis='x', labelsize = 20)
+            ax.tick_params(axis='y', labelsize = 20)
+            ax.grid() 
+            plt.legend(fontsize = 16, loc = (0.6, 0.7))  
+            if savefigures == 'true':
+                plt.savefig(f'{grid_or_HDE}_SVD_mode_{j}_{loss_in_dB}_dB_loss.svg')
+            plt.show() 
+    return [signal_modes, idler_modes, K, s_norm]
+
+#these functions s_omega and s_wavelength convert units involving spacing or distance (bandwidth, etc) 
+#between wavelength and frequency units
+#they accept a spacing (value) in wavelength (angular frequency) and a central point l_0 (value) around which to calculate
+#and return the corresponding spacing value in angular frequency (wavelength)
+def s_omega(s_wavelength, l_0):
+    a = angular_frequency(l_0) 
+    b = angular_frequency(l_0 + s_wavelength) 
+    return abs(b - a) 
+
+def s_wavelength(s_omega, w_0):
+    a = wavelength(w_0) 
+    b = wavelength(w_0 + s_omega)
+    return abs(b - a) 
+
+#define a gaussian distribution
+#accepts x (1D array-like)
+#x_0 (value)
+#and s (value)
+#and returns a gaussian distribution in 'x' centered around x_0 with bandwidth 's' 
+def gauss(x, x_0, s):
+    a = x - x_0 
+    b = 2 * s**2 
+    gauss = np.exp(-a**2 / b) 
+    return gauss 
+    
+#this calculates the overlap integral between two 2D joint spectral amplitudes {JSA_1, JSA_2} (2D array-like)
+#by taking the integral of their product over {l_1, l_2} (1D array-like)
+#this function returns a single value (overlap) 
+def get_overlap_2D(l_1, l_2, JSA_1, JSA_2, title_1, title_2):
+    #normalize the two input spectra and take the conjugate of one of them
+    JSA_1 = np.conjugate(normalize_2D(l_1, l_2, JSA_1))
+    JSA_2 = normalize_2D(l_1, l_2, JSA_2) 
+    #define a pseudo-differential for the discrete integral
+    dl_1 = (l_1[-1] - l_1[0]) / len(l_1)
+    dl_2 = (l_2[-1] - l_2[0]) / len(l_2) 
+    #define an integrand
+    overlap_integrand = JSA_1 * dl_1 * JSA_2 * dl_2 
+    #sum the integrand over all values
+    overlap_integral = np.sum(overlap_integrand) 
+    overlap = abs(overlap_integral) 
+    print('The overlap between', title_1, 'and', title_2, 'is', overlap)
+    return overlap 
+
+#Sellmeier equations for crystal options
+#Source: refractiveindex.info
+#ordinary (o) and extraordinary (e) refractive indices of different crystals as a fucntion of wavelength in um
+#the notation 'f = lambda x: f(x)' is the same as 'def f(x): return f(x)' in Python 
+#these functions take x (corresponding to wavelength in micrometers) and return a refractive index value
+#improved Sellmeier equations for BBO courtesy of: https://www.sciencedirect.com/science/article/pii/S0030401800009688?via%3Dihub
+n_x_KTP = lambda x: (3.29100+0.04140/(x**2-0.03978)+9.35522/(x**2-31.45571))**.5
+n_z_KTP = lambda x: (4.59423+0.06206/(x**2-0.04763)+110.80672/(x**2-86.12171))**.5
+n_y_KTP = lambda x: (3.45018+0.04341/(x**2-0.04597)+16.98825/(x**2-39.43799))**.5
+n_o_LNO3 = lambda x: (1+2.6734/(1-0.01764/x**2)+1.2290/(1-0.05914/x**2)+12.614/(1-474.60/x**2))**.5
+n_e_LNO3 = lambda x: (1+2.9804/(1-0.02047/x**2)+0.5981/(1-0.0666/x**2)+8.9543/(1-416.08/x**2))**.5
+n_o_BBO = lambda x: (2.7359+0.01878/(x**2-0.01822)-0.01471*x**2+0.0006081*x**4-0.00006740*x**6)**.5
+n_e_BBO = lambda x: (2.3753+0.01224/(x**2-0.01667)-0.01627*x**2+0.0005716*x**4-0.00006305*x**6)**.5
+n_o_AgGaS2 = lambda x: (5.7975+0.2311/(x**2-0.0688)-0.00257*x**2)**.5
+n_e_AgGaS2 = lambda x: (5.5436+0.2230/(x**2-0.0946)-0.00261*x**2)**.5 
+
+#generate the phase indices of the pump, signal, and idler photons 
+#based on the choice of crystal, crystal axes (for KTP), and polarization
+#We have the Sellmeier equations for ordinary and extraordinary polarizations defined above
+#this selects a crystal then simply assigns a more simple function name n_o or n_e to the rest of the code
+#given the choice of crystal 
+if crystal == 'KTP':
+    if KTP_ordinary_axis == 'x':
+        n_o = lambda l: n_x_KTP(l) 
+    elif KTP_ordinary_axis == 'y':
+        n_o = lambda l: n_y_KTP(l) 
+    n_e = lambda l: n_z_KTP(l) 
+ 
+elif crystal == 'LNO3':
+    n_o = lambda l: n_o_LNO3(l)
+    #the n_e function is calculated in terms of the phasematching angle given a standard formula for uniaxial crystals 
+    n_e = lambda l:  ( np.cos(theta_pm)**2 / n_o_LNO3(l)**2  + np.sin(theta_pm)**2 / n_e_LNO3(l)**2 ) ** (-1/2)
+elif crystal == 'BBO':
+    n_o = lambda l: n_o_BBO(l)
+    n_e = lambda l:  ( np.cos(theta_pm)**2 / n_o_BBO(l)**2  + np.sin(theta_pm)**2 / n_e_BBO(l)**2 ) ** (-1/2)
+elif crystal == 'AgGaS2':
+    n_o = lambda l: n_o_AgGaS2(l) 
+    n_e =  lambda l: ( np.cos(theta_pm)**2 / n_o_AgGaS2(l)**2  + np.sin(theta_pm)**2 / n_e_AgGaS2(l)**2 ) ** (-1/2) 
+    
+if pump_polarization == 'o':
+    n_p = lambda l: n_o(l) 
+elif pump_polarization == 'e':
+    n_p = lambda l: n_e(l) 
+if signal_polarization == 'o':
+    n_s = lambda l: n_o(l)
+elif signal_polarization == 'e':
+    n_s = lambda l: n_e(l)
+if idler_polarization == 'o':
+    n_i = lambda l: n_o(l)
+elif idler_polarization == 'e':
+    n_i = lambda l: n_e(l) 
+    
+#Define simulation variables and parameters 
+    
+#Define central pump, signal, and idler wavelengths
+wavelength_p_0 = 775 * nanometers  
+wavelength_s_0 = wavelength_p_0 * 2
+wavelength_i_0 = ( 1/wavelength_p_0 - 1/wavelength_s_0 ) ** (-1) 
+
+#define span and resolution for wavelength value arrays
+if grid_or_HDE == 'HDE': 
+    
+    wavelength_span = HDE_state_span
+    wavelength_resolution = HDE_state_resolution
+
+elif grid_or_HDE == 'grid':
+    
+    wavelength_span = grid_state_span 
+    wavelength_resolution = grid_state_resolution
+
+#central angular frequencies of the spectra
+w_p_0 = angular_frequency(wavelength_p_0) 
+w_s_0 = angular_frequency(wavelength_s_0) 
+w_i_0 = angular_frequency(wavelength_i_0) 
+
+#define start and stop values for wavelength arrays
+wavelength_s_min = wavelength_s_0 - wavelength_span /2
+wavelength_i_min = wavelength_i_0 - wavelength_span /2
+wavelength_s_max = wavelength_s_0 + wavelength_span /2 
+wavelength_i_max = wavelength_i_0 + wavelength_span /2 
+ 
+#define arrays of signal and idler wavelength values
+l_s = np.arange(wavelength_s_min, wavelength_s_max, wavelength_resolution) 
+l_i = np.arange(wavelength_i_min, wavelength_i_max, wavelength_resolution) 
+l = [l_s,l_i] 
+
+#construct corresponding angular frequency value arrays
+w_s = angular_frequency(l_s) 
+w_i = angular_frequency(l_i) 
+
+#reshape the arrays for use in 2D functions
+L_s = l_s.reshape(-1,1)
+L_i = l_i.reshape(1,-1) 
+
+W_s = w_s.reshape(-1,1)
+W_i = w_i.reshape(1,-1)
+
+#define the pump wavelength and angular frequency arrays assuming conservation of energy
+W_p = W_s + W_i 
+L_p = (1/L_s + 1/L_i) ** (-1) 
+
+#wavenumbers and poling period
+
+#the wavenumbers at the central wavelenegths
+k_p_0 = two_pi * n_p(wavelength_p_0) / wavelength_p_0 
+k_s_0 = two_pi * n_s(wavelength_s_0) / wavelength_s_0
+k_i_0 = two_pi * n_i(wavelength_i_0) / wavelength_i_0 
+
+#the wavenumbers at every wavelength
+k_p = two_pi * n_p(L_p) / L_p 
+k_s = two_pi * n_s(L_s) / L_s 
+k_i = two_pi * n_i(L_i) / L_i 
+
+#the unpoled phase mismatch at 775 nm --> {1550, 1550} nm
+delta_k_0 = k_s_0 + k_i_0 - k_p_0 
+#choose a poling period so as to perfectly phase match 775 nm --> {1550, 1550} nm
+poling_period = two_pi / delta_k_0 
+
+#unpoled phase mismatch
+delta_k = k_s + k_i - k_p 
+#for crystals that can be periodically-poled, include quasi-phasematching:
+if crystal == 'KTP' or crystal == 'LNO3':
+    delta_k -= two_pi / poling_period 
+
+#2D joint amplitude/intensity functions 
+#PEF = 'pump envelope function (in amplitude)'
+#PMF = 'phase matching function (in amplitude)'
+#JSA = 'joint spectral amplitude'
+#JSI = 'joint spectral intensity'
+PEF = gauss(L_p, wavelength_p_0, pump_bandwidth) 
+PMF = np.sinc(delta_k * L / 2) * np.exp(1j * delta_k * L / 2) 
+JSA = PEF * PMF 
+JSI = abs(JSA)**2 
+signal_mode_overlap_values = [[]] 
+idler_mode_overlap_values = [[]] 
+
+#define the modulation function 
+#F_mod_j is equivalent to the function called β^(μ) in the manuscript
+#It takes an index j (0-3) (in the text the equivalent index is μ and runs from 1-4)
+#and returns the phase factor which the amplitude for production in crystal j acquires by the time delay sequence
+F_mod_j_without_loss = lambda j: ( np.exp(1j * W_p * tau_p_j(j)) 
+                    * np.exp(1j * W_s * tau_s_j(j)) 
+                    * np.exp(1j * W_i * tau_i_j(j)) )  
+
+#F_mod_0 is the total modulation function in the absence of loss
+F_mod_0 = 0
+#this for loop sums over the F_mod_j's to obtain the total lossless modulation function F_mod_0
+for j in range(0,4):
+    if dispersion == 'true':
+        F_mod_0 += F_mod_j_without_loss(j) * np.exp(1j * delta_k * L * (j-1))
+    else:
+        F_mod_0 += F_mod_j_without_loss(j)
+    
+#generate the lossless JSA 
+JSA_no_loss = JSA * F_mod_0
+#plot the lossless joint spectral functions 
+#PEF = 'pump envelope function'
+#PMF = 'phase matching function
+#JSA = 'joint spectral amplitude' 
+plot_2D(*l, PEF, f'PEF_{grid_or_HDE}')
+plot_2D(*l, PMF, f'PMF_{grid_or_HDE}') 
+plot_2D(*l, JSA, f'JSI_0_{grid_or_HDE}') 
+if dispersion == 'true':
+    plot_2D(*l, F_mod_0, f'F_mod_{grid_or_HDE}_with_crystal_dispersion') 
+    plot_2D(*l, JSA_no_loss, f'{grid_or_HDE}_0_dB_with_crystal_dispersion')
+else:
+    plot_2D(*l, F_mod_0, f'F_mod_{grid_or_HDE}') 
+    plot_2D(*l, JSA_no_loss, f'{grid_or_HDE}_0_dB')
+
+ 
+if grid_or_HDE == 'grid':
+    #find the index in l_s which corresponds to 1550 nm wavelength
+    index = np.argmin(abs(l_s - 1550 * nanometers)) 
+    #obtain the 1D projection of JSA given the signal wavelength is 1550 nm
+    projected_idler_spectrum = np.squeeze(abs(JSA_no_loss[index,:]))
+    plot_1D(l_i, projected_idler_spectrum, 'Idler_spectrum') 
+
+#set up and perform the analysis of the spectra given loss
+JSA_overlap_values = [] 
+#overlap_0 is a check. If the overlap function is working properly, overlap_0 = 1 
+overlap_0= get_overlap_2D(*l, abs(JSA_no_loss)**2, abs(JSA_no_loss)**2, 'JSA without loss', 'JSA with loss')
+loss_dB_values = []
+K_values = []
+overlap_with_unmodulated_JSA_values = [] 
+
+#this for loop loops over different values of the loss (expressed in dB)
+#and calculates the JSI, projected idler state, modes, Schmidt number, and overlap
+for loss_in_dB in np.arange(0,20,0.2): 
+    #define arrays that will contain the overlap values for every value of the loss
+    signal_mode_overlap_values = [] 
+    idler_mode_overlap_values = [] 
+    
+    #the amplitude is affected by loss as 10^(-loss_in_dB/20) 
+    amplitude_after_loss = np.power(10, -loss_in_dB/20) 
+    #define an array that holds the values of loss_in_dB for plotting later
+    loss_dB_values.append(loss_in_dB) 
+    
+    #recalculate the jth phase factor
+    #recalling that production at every crystal is assumed to involve two fiber/free-space interfaces
+    #at which loss is calculated
+    if dispersion == 'true':
+        F_mod_j = lambda j: F_mod_j_without_loss(j) * amplitude_after_loss**(2*j-1) * np.exp(1j * delta_k * L * (j-1))
+    else:
+        F_mod_j = lambda j: F_mod_j_without_loss(j) * amplitude_after_loss**(2*j-1) * np.exp(1j * delta_k * L * (j-1))
+
+    #sum over the phase factors to obtain the lossy modulation function
+    F_mod = 0
+     
+    for j in range(0,4):
+        F_mod += F_mod_j(j) 
+        F_mod_0 += F_mod_j_without_loss(j) 
+         
+    #calculate the modulated JSA given the lossy modulation function 
+    JSA_with_loss = JSA * F_mod 
+    
+    #plot the JSI for selected amounts of loss
+    if loss_in_dB in [0,1,4,10]: 
+        if dispersion == 'true':
+            plot_2D(*l, JSA_with_loss, f'{grid_or_HDE}_{int(loss_in_dB)}_dB_with_crystal_dispersion') 
+        else:
+            plot_2D(*l, JSA_with_loss, f'{grid_or_HDE}_{int(loss_in_dB)}_dB') 
+            
+    #get grid state signal and idler modes with loss
+    #recall that get_modes() actually plots all modes 
+    #so we only want to call it with plotting = 'true' one time
+    #and only in the case of the grid state (we are not interested in seeing the HDE modes)
+    if grid_or_HDE == 'grid':
+        signal_modes_with_loss = get_modes(*l, JSA_with_loss, 'true', loss_in_dB)[0]
+    else:
+        signal_modes_with_loss = get_modes(*l, JSA_with_loss, 'false', loss_in_dB)[0]
+        
+    idler_modes_with_loss = get_modes(*l, JSA_with_loss, 'false', loss_in_dB)[1] 
+    
+    #obtain the Schmidt number for the lossy states
+    K_with_loss = get_modes(*l, JSA_with_loss, 'false', loss_in_dB)[2]
+    K_values.append(K_with_loss)
+    N_with_loss = int(K_with_loss)  
+    s_norm = get_modes(*l, JSA_with_loss, 'false', loss_in_dB)[3]
+    
+    #calculate the projection of the idler spectrum given λ_s = 1550 nm with loss 
+    if grid_or_HDE == 'grid':
+        projected_idler_spectrum_with_loss = np.squeeze(abs(JSA_with_loss[index, :]))
+        
+        #plot the lossy projected spectrum alongside the lossless projected spectrum for selected loss cases
+        if loss_in_dB in [0,1,4,10]:
+            fig, ax = plt.subplots() 
+            ax.plot(l_i*1000, abs(projected_idler_spectrum)/np.max(abs(projected_idler_spectrum)), label = r'$|\Psi_i|\;(0\,\mathrm{dB})$')
+            ax.plot(l_i*1000, abs(projected_idler_spectrum_with_loss)/np.max(abs(projected_idler_spectrum_with_loss)), label = r'$|\Psi_i|\;$'+rf'$({np.round(loss_in_dB,2)}$'+r'$\;\mathrm{dB}$)')
+            ax.set_xlabel(r'$\lambda_i~\mathrm{(nm)}$', fontsize = 24)
+            ax.set_ylabel(r'$\mathrm{Amplitude}~\mathrm{(a.u.)}$', fontsize = 24)
+            ax.tick_params(axis='x', labelsize = 20)
+            ax.tick_params(axis='y', labelsize = 20)
+            plt.grid()
+            plt.legend(fontsize = 16, loc = (0.62, 0.7)) 
+            if savefigures == 'true':
+                plt.savefig(f'proj_{int(loss_in_dB)}_dB.svg') 
+            plt.show() 
+    #calculate the relevant overlap values
+    #namely overlap between lossy modulated case and lossless modulated case
+    #and overlap between lossy modulated case and unmodulated case
+    #note that the function get_overlap_2D() is defined to act on joint spectral amplitudes
+    #and we call it on |JSA|^2 (i.e. intensities) 
+    #whereas in the manuscript, the corresponding overlap function is defined to act on intensities directly
+    JSA_overlap = get_overlap_2D(*l, abs(JSA_no_loss)**2, abs(JSA_with_loss)**2, 'JSA without loss', f'JSA with {loss_in_dB} dB loss') 
+    overlap_with_unmodulated_JSA = get_overlap_2D(*l, abs(JSA)**2, abs(JSA_with_loss)**2, 'unmodulated JSA', f'JSA with {loss_in_dB} dB loss') 
+    JSA_overlap_values.append(JSA_overlap)
+    overlap_with_unmodulated_JSA_values.append(overlap_with_unmodulated_JSA)
+       
+#plot the overlap and Schmidt number vs. loss_in_dB
+fig, ax = plt.subplots()
+ax1 = ax.twinx()  
+ax.plot(loss_dB_values, JSA_overlap_values, label = 'Overlap with No-Loss JSI', color = 'xkcd:magenta')
+ax.plot(loss_dB_values, overlap_with_unmodulated_JSA_values, label = 'Overlap with Unmodulated JSI', color = 'xkcd:magenta', linestyle = 'dashed')
+ax.legend(loc = (0.4,0.7))
+ax1.plot(loss_dB_values, K_values, label = 'Schmidt Number (K)', color = 'xkcd:blue')
+ax1.legend(loc=(0.4,0.625))
+ax.set_xlabel(r'$\mathrm{Loss}~\mathrm{(dB)}$', fontsize = 24)
+ax1.set_ylabel(r'$K$', fontsize = 24, color = 'xkcd:blue')
+ax.set_ylabel(r'$\mathrm{Overlap}$', fontsize = 24, color = 'xkcd:magenta') 
+ax.tick_params(axis = 'x', labelsize = 20)
+ax.tick_params(axis = 'y', labelsize = 20, labelcolor = 'xkcd:magenta')
+ax1.tick_params(axis = 'y', labelsize = 20, labelcolor = 'xkcd:blue')
+plt.grid()
+plt.savefig(f'Overlap_and_K_vs_Loss_{grid_or_HDE}.svg')
+plt.show() 
+
